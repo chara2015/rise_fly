@@ -6,18 +6,14 @@ import com.mojang.brigadier.context.CommandContext;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.text.Text;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.ChunkPos;
 import net.minecraft.util.math.Vec3d;
 import rise_fly.client.Rise_flyClient;
 import rise_fly.client.flight.FlightControl;
-import rise_fly.client.pathing.Pathfinder;
-import rise_fly.client.util.AimingUtils;
-import java.util.List;
 
 import static net.fabricmc.fabric.api.client.command.v2.ClientCommandManager.*;
 
 public class CommandManager {
+
     public static void register(CommandDispatcher<FabricClientCommandSource> dispatcher, Rise_flyClient mod) {
         dispatcher.register(literal("fly")
                 .executes(CommandManager::executeHelp)
@@ -38,30 +34,17 @@ public class CommandManager {
     private static int executeFlyTo(CommandContext<FabricClientCommandSource> context, Rise_flyClient mod) {
         ClientPlayerEntity player = context.getSource().getPlayer();
         if (player == null) return 0;
+
         try {
             String yStr = context.getArgument("y", String.class);
             double x = Double.parseDouble(context.getArgument("x", String.class));
             double z = Double.parseDouble(context.getArgument("z", String.class));
-            double y = (yStr.equalsIgnoreCase("x") || yStr.equalsIgnoreCase("~")) ? Double.NaN : Double.parseDouble(yStr);
 
-            Vec3d targetAimPos = new Vec3d(x, Double.isNaN(y) ? player.getY() : y, z);
-            AimingUtils.aimAt(player, targetAimPos);
+            // 如果y是'x'或'~', 则使用玩家当前的y坐标作为最终目标
+            double y = (yStr.equalsIgnoreCase("x") || yStr.equalsIgnoreCase("~")) ? player.getY() : Double.parseDouble(yStr);
 
-            ChunkPos startChunk = player.getChunkPos();
-            ChunkPos targetChunk = new ChunkPos(BlockPos.ofFloored(x, 0, z));
-            context.getSource().sendFeedback(Text.literal("§a[RiseFly] §f正在计算路径..."));
+            mod.startFlight(new Vec3d(x, y, z));
 
-            new Thread(() -> {
-                List<ChunkPos> path = Pathfinder.INSTANCE.findPath(startChunk, targetChunk);
-                context.getSource().getClient().execute(() -> {
-                    if (path != null && !path.isEmpty()) {
-                        mod.startFlightWithPath(path);
-                        context.getSource().sendFeedback(Text.literal("§a[RiseFly] §f路径计算完成，开始飞行！"));
-                    } else {
-                        context.getSource().sendFeedback(Text.literal("§c[RiseFly] 未能找到通往目标的路径！"));
-                    }
-                });
-            }).start();
             return 1;
         } catch (NumberFormatException e) {
             context.getSource().sendFeedback(Text.literal("§c[RiseFly] 无效的坐标格式！"));
@@ -86,7 +69,7 @@ public class CommandManager {
         context.getSource().sendFeedback(Text.of(
                 "§a---------- [RiseFly 帮助] ----------\n" +
                         "§6/fly to <x> <y> <z> §f- 飞往指定三维坐标。\n" +
-                        "§6/fly to <x> x <z> §f- 飞往指定XZ坐标，智能选择高度。\n" +
+                        "§6/fly to <x> x <z> §f- 飞往指定XZ坐标，保持当前高度。\n" +
                         "§6/fly stop §f- 停止当前所有飞行任务。\n" +
                         "§6/fly debug §f- 开启/关闭路径渲染等Debug信息。\n" +
                         "§6/fly help §f- 显示此帮助菜单。\n" +

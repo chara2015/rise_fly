@@ -5,12 +5,23 @@ import net.minecraft.util.math.ChunkPos;
 import net.minecraft.util.math.Vec3d;
 import rise_fly.client.cache.WorldCache;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class Pathfinder {
     public static final Pathfinder INSTANCE = new Pathfinder();
     private static final int FLIGHT_Y = 200;
 
+    private final Map<ChunkPos, Double> costMap = new ConcurrentHashMap<>();
+
     private Pathfinder() {}
+
+    public void reportBadChunk(ChunkPos pos) {
+        costMap.put(pos, costMap.getOrDefault(pos, 1.0) * 2);
+    }
+
+    public void clearCosts() {
+        costMap.clear();
+    }
 
     public List<ChunkPos> findPath(ChunkPos startPos, ChunkPos targetPos) {
         PathNode startNode = new PathNode(startPos);
@@ -27,13 +38,16 @@ public class Pathfinder {
                 return retracePath(startNode, currentNode);
             }
             closedSet.add(currentNode.pos);
+
             for (PathNode neighbor : getNeighbors(currentNode)) {
                 if (closedSet.contains(neighbor.pos) || !isTraversable(currentNode.pos, neighbor.pos)) {
                     continue;
                 }
-                double newCost = currentNode.gCost + getDistance(currentNode, neighbor);
-                if (newCost < neighbor.gCost || !openSet.contains(neighbor)) {
-                    neighbor.gCost = newCost;
+                double costMultiplier = costMap.getOrDefault(neighbor.pos, 1.0);
+                double newMovementCostToNeighbor = currentNode.gCost + getDistance(currentNode, neighbor) * costMultiplier;
+
+                if (newMovementCostToNeighbor < neighbor.gCost || !openSet.contains(neighbor)) {
+                    neighbor.gCost = newMovementCostToNeighbor;
                     neighbor.hCost = getDistance(neighbor, targetNode);
                     neighbor.parent = currentNode;
                     if (!openSet.contains(neighbor)) {
