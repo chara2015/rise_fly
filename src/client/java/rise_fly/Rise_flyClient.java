@@ -5,8 +5,6 @@ import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallba
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.text.Text;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.ChunkPos;
 import net.minecraft.util.math.Vec3d;
 import rise_fly.client.cache.WorldCache;
 import rise_fly.client.command.CommandManager;
@@ -16,7 +14,6 @@ import java.util.List;
 
 public class Rise_flyClient implements ClientModInitializer {
 
-	// --- 新增：静态实例和目标变量 ---
 	private static Rise_flyClient INSTANCE;
 	private Vec3d finalTargetPosition;
 
@@ -37,7 +34,7 @@ public class Rise_flyClient implements ClientModInitializer {
 
 	public void startFlight(Vec3d target) {
 		this.finalTargetPosition = target;
-		Pathfinder.INSTANCE.clearCosts(); // 开始新任务时，清空旧的成本记录
+		Pathfinder.INSTANCE.clearCosts();
 		replan();
 	}
 
@@ -45,13 +42,13 @@ public class Rise_flyClient implements ClientModInitializer {
 		MinecraftClient client = MinecraftClient.getInstance();
 		if (client.player == null) return;
 
-		ChunkPos startChunk = client.player.getChunkPos();
-		ChunkPos targetChunk = new ChunkPos(BlockPos.ofFloored(finalTargetPosition));
+		Vec3d startVec = client.player.getPos();
 
-		client.player.sendMessage(Text.literal("§e[RiseFly] (重)计算路径..."), true);
+		client.player.sendMessage(Text.literal("§e[RiseFly] (重)计算并优化路径..."), true);
 
 		new Thread(() -> {
-			List<ChunkPos> path = Pathfinder.INSTANCE.findPath(startChunk, targetChunk);
+			List<Vec3d> path = Pathfinder.INSTANCE.findPath(startVec, this.finalTargetPosition);
+
 			client.execute(() -> {
 				if (path != null && !path.isEmpty()) {
 					FlightControl.INSTANCE.setEnabled(true);
@@ -64,7 +61,6 @@ public class Rise_flyClient implements ClientModInitializer {
 		}).start();
 	}
 
-	// --- 新增：静态方法供FlightControl调用 ---
 	public static void requestReplan() {
 		if(INSTANCE != null) {
 			INSTANCE.replan();

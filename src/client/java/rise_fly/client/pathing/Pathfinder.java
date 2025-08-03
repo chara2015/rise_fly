@@ -9,8 +9,6 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class Pathfinder {
     public static final Pathfinder INSTANCE = new Pathfinder();
-    private static final int FLIGHT_Y = 200;
-
     private final Map<ChunkPos, Double> costMap = new ConcurrentHashMap<>();
 
     private Pathfinder() {}
@@ -23,7 +21,59 @@ public class Pathfinder {
         costMap.clear();
     }
 
-    public List<ChunkPos> findPath(ChunkPos startPos, ChunkPos targetPos) {
+    public List<Vec3d> findPath(Vec3d startVec, Vec3d targetVec) {
+        ChunkPos startPos = new ChunkPos(BlockPos.ofFloored(startVec));
+        ChunkPos targetPos = new ChunkPos(BlockPos.ofFloored(targetVec));
+
+        int cruiseAltitude = getCruiseAltitude(startPos, targetPos);
+
+        List<ChunkPos> chunkPath = findChunkPath(startPos, targetPos, cruiseAltitude);
+        if (chunkPath == null) { // A* 未找到路径时也应返回null
+            return null;
+        }
+
+        return smoothPath(startVec, targetVec, chunkPath, cruiseAltitude);
+    }
+
+    private List<Vec3d> smoothPath(Vec3d startPoint, Vec3d endPoint, List<ChunkPos> path, int cruiseAltitude) {
+        List<Vec3d> waypoints = new ArrayList<>();
+        waypoints.add(startPoint);
+
+        if (path.isEmpty()) {
+            waypoints.add(endPoint);
+            return waypoints;
+        }
+
+        int currentPathIndex = 0;
+        while(currentPathIndex < path.size()) {
+            Vec3d lastWaypoint = waypoints.get(waypoints.size() - 1);
+            int nextNodeIndex = path.size() - 1;
+
+            while(nextNodeIndex > currentPathIndex) {
+                ChunkPos checkChunk = path.get(nextNodeIndex);
+                Vec3d checkPoint = new Vec3d(checkChunk.getCenterX(), cruiseAltitude, checkChunk.getCenterZ());
+
+                if (isTraversable(lastWaypoint, checkPoint)) {
+                    waypoints.add(checkPoint);
+                    currentPathIndex = nextNodeIndex;
+                    break;
+                }
+                nextNodeIndex--;
+            }
+
+            if (nextNodeIndex <= currentPathIndex) {
+                ChunkPos nextChunk = path.get(currentPathIndex);
+                waypoints.add(new Vec3d(nextChunk.getCenterX(), cruiseAltitude, nextChunk.getCenterZ()));
+                currentPathIndex++;
+            }
+        }
+
+        waypoints.add(endPoint);
+        return waypoints;
+    }
+
+
+    private List<ChunkPos> findChunkPath(ChunkPos startPos, ChunkPos targetPos, int cruiseAltitude) {
         PathNode startNode = new PathNode(startPos);
         PathNode targetNode = new PathNode(targetPos);
         PriorityQueue<PathNode> openSet = new PriorityQueue<>();
@@ -38,14 +88,15 @@ public class Pathfinder {
                 return retracePath(startNode, currentNode);
             }
             closedSet.add(currentNode.pos);
-
             for (PathNode neighbor : getNeighbors(currentNode)) {
-                if (closedSet.contains(neighbor.pos) || !isTraversable(currentNode.pos, neighbor.pos)) {
+                Vec3d currentNodeCenter = new Vec3d(currentNode.pos.getCenterX(), cruiseAltitude, currentNode.pos.getCenterZ());
+                Vec3d neighborNodeCenter = new Vec3d(neighbor.pos.getCenterX(), cruiseAltitude, neighbor.pos.getCenterZ());
+
+                if (closedSet.contains(neighbor.pos) || !isTraversable(currentNodeCenter, neighborNodeCenter)) {
                     continue;
                 }
                 double costMultiplier = costMap.getOrDefault(neighbor.pos, 1.0);
                 double newMovementCostToNeighbor = currentNode.gCost + getDistance(currentNode, neighbor) * costMultiplier;
-
                 if (newMovementCostToNeighbor < neighbor.gCost || !openSet.contains(neighbor)) {
                     neighbor.gCost = newMovementCostToNeighbor;
                     neighbor.hCost = getDistance(neighbor, targetNode);
@@ -59,17 +110,34 @@ public class Pathfinder {
         return null;
     }
 
-    private boolean isTraversable(ChunkPos from, ChunkPos to) {
-        Vec3d start = new Vec3d(from.getCenterX(), FLIGHT_Y, from.getCenterZ());
-        Vec3d end = new Vec3d(to.getCenterX(), FLIGHT_Y, to.getCenterZ());
-        int samples = 5;
+    private boolean isTraversable(Vec3d from, Vec3d to) {
+        int samples = (int) Math.ceil(from.distanceTo(to) / 8);
         for (int i = 0; i <= samples; i++) {
-            Vec3d samplePoint = start.lerp(end, (double)i / samples);
+            Vec3d samplePoint = from.lerp(to, (double)i / samples);
             if (WorldCache.INSTANCE.isSolid(BlockPos.ofFloored(samplePoint))) {
                 return false;
             }
         }
         return true;
+    }
+
+    private int getCruiseAltitude(ChunkPos start, ChunkPos end) {
+        int maxTerrainY = -64;
+        BlockPos.Mutable mutable = new BlockPos.Mutable();
+        ChunkPos[] checkPoints = {start, new ChunkPos((start.x + end.x) / 2, (start.z + end.z) / 2), end};
+
+        for (ChunkPos cp : checkPoints) {
+            for (int y = 319; y > -64; y--) {
+                mutable.set(cp.getCenterX(), y, cp.getCenterZ());
+                if (WorldCache.INSTANCE.isSolid(mutable)) {
+                    if (y > maxTerrainY) {
+                        maxTerrainY = y;
+                    }
+                    break;
+                }
+            }
+        }
+        return Math.min(maxTerrainY + 30, 256);
     }
 
     private List<ChunkPos> retracePath(PathNode startNode, PathNode endNode) {
