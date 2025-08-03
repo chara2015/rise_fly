@@ -28,19 +28,38 @@ public class Pathfinder {
         ChunkPos startPos = new ChunkPos(BlockPos.ofFloored(startVec));
         ChunkPos targetPos = new ChunkPos(BlockPos.ofFloored(targetVec));
 
-        int cruiseAltitude = getCruiseAltitude(startPos, targetPos);
-        DebugUtils.log("智能巡航高度选择: Y=" + cruiseAltitude);
+        // --- 核心修改：多层次高度搜索 ---
+        // 1. 定义要尝试的飞行高度层列表
+        List<Integer> altitudesToTry = new ArrayList<>();
+        int targetY = (int) targetVec.y;
 
-        List<ChunkPos> chunkPath = findChunkPath(startPos, targetPos, cruiseAltitude);
-        if (chunkPath == null) {
-            DebugUtils.log("§cA* 寻路失败，未找到区块路径。");
-            return null;
+        // 优先加入目标高度和玩家当前高度
+        altitudesToTry.add(targetY);
+        altitudesToTry.add((int)startVec.y);
+
+        // 加入其他备选通用高度
+        altitudesToTry.add(120); // 下界顶部
+        altitudesToTry.add(200); // 主世界巡航
+        altitudesToTry.add(80);  // 中低空
+
+        // 移除重复的高度
+        List<Integer> distinctAltitudes = altitudesToTry.stream().distinct().toList();
+
+        // 2. 依次尝试每个高度层
+        for (int altitude : distinctAltitudes) {
+            DebugUtils.log("正在尝试在 Y=" + altitude + " 高度寻找路径...");
+            List<ChunkPos> chunkPath = findChunkPath(startPos, targetPos, altitude);
+
+            if (chunkPath != null && !chunkPath.isEmpty()) {
+                DebugUtils.log("§a成功在 Y=" + altitude + " 找到路径！区块节点数: " + chunkPath.size());
+                List<Vec3d> smoothedPath = smoothPath(startVec, targetVec, chunkPath, altitude);
+                DebugUtils.log("路径平滑完成，生成 " + smoothedPath.size() + " 个精确路径点。");
+                return smoothedPath;
+            }
         }
-        DebugUtils.log("A* 找到 " + chunkPath.size() + " 个区块节点。");
 
-        List<Vec3d> smoothedPath = smoothPath(startVec, targetVec, chunkPath, cruiseAltitude);
-        DebugUtils.log("路径平滑完成，生成 " + smoothedPath.size() + " 个精确路径点。");
-        return smoothedPath;
+        DebugUtils.log("§c在所有高度层均未找到可用路径。");
+        return null;
     }
 
     private List<Vec3d> smoothPath(Vec3d startPoint, Vec3d endPoint, List<ChunkPos> path, int cruiseAltitude) {
@@ -80,6 +99,7 @@ public class Pathfinder {
         return waypoints;
     }
 
+
     private List<ChunkPos> findChunkPath(ChunkPos startPos, ChunkPos targetPos, int cruiseAltitude) {
         PathNode startNode = new PathNode(startPos);
         PathNode targetNode = new PathNode(targetPos);
@@ -118,6 +138,11 @@ public class Pathfinder {
     }
 
     private boolean isTraversable(Vec3d from, Vec3d to) {
+        // 在检查路径时，也检查起点和终点本身是否在方块里
+        if (WorldCache.INSTANCE.isSolid(BlockPos.ofFloored(from)) || WorldCache.INSTANCE.isSolid(BlockPos.ofFloored(to))) {
+            return false;
+        }
+
         int samples = (int) Math.ceil(from.distanceTo(to) / 8);
         for (int i = 0; i <= samples; i++) {
             Vec3d samplePoint = from.lerp(to, (double)i / samples);
@@ -126,25 +151,6 @@ public class Pathfinder {
             }
         }
         return true;
-    }
-
-    private int getCruiseAltitude(ChunkPos start, ChunkPos end) {
-        int maxTerrainY = -64;
-        BlockPos.Mutable mutable = new BlockPos.Mutable();
-        ChunkPos[] checkPoints = {start, new ChunkPos((start.x + end.x) / 2, (start.z + end.z) / 2), end};
-
-        for (ChunkPos cp : checkPoints) {
-            for (int y = 319; y > -64; y--) {
-                mutable.set(cp.getCenterX(), y, cp.getCenterZ());
-                if (WorldCache.INSTANCE.isSolid(mutable)) {
-                    if (y > maxTerrainY) {
-                        maxTerrainY = y;
-                    }
-                    break;
-                }
-            }
-        }
-        return Math.min(maxTerrainY + 30, 256);
     }
 
     private List<ChunkPos> retracePath(PathNode startNode, PathNode endNode) {
