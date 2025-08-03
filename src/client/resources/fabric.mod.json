@@ -1,0 +1,37 @@
+{
+	"schemaVersion": 1,
+	"id": "rise_fly",
+	"version": "2.0.0",
+	"name": "rise_fly",
+	"description": "HE Team",
+	"authors": [
+		"chara201x"
+	],
+	"contact": {
+		"homepage": "https://fabricmc.net/",
+		"sources": "https://github.com/FabricMC/fabric-example-mod"
+	},
+	"license": "CC0-1.0",
+	"icon": "assets/rise_fly/icon.png",
+	"environment": "client",
+	"entrypoints": {
+		"client": [
+			"rise_fly.Rise_flyClient"
+		],
+		"fabric-datagen": [
+			"rise_fly.Rise_flyDataGenerator"
+		]
+	},
+	"mixins": [
+		"rise_fly.mixins.json"
+	],
+	"depends": {
+		"fabricloader": ">=0.16.14",
+		"minecraft": "~1.20.4",
+		"java": ">=17",
+		"fabric-api": "*"
+	},
+	"suggests": {
+		"another-mod": "*"
+	}
+}
