@@ -4,6 +4,8 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.ChunkPos;
 import net.minecraft.util.math.Vec3d;
 import rise_fly.client.cache.WorldCache;
+import rise_fly.client.util.DebugUtils;
+
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -22,17 +24,23 @@ public class Pathfinder {
     }
 
     public List<Vec3d> findPath(Vec3d startVec, Vec3d targetVec) {
+        DebugUtils.log("开始路径计算...");
         ChunkPos startPos = new ChunkPos(BlockPos.ofFloored(startVec));
         ChunkPos targetPos = new ChunkPos(BlockPos.ofFloored(targetVec));
 
         int cruiseAltitude = getCruiseAltitude(startPos, targetPos);
+        DebugUtils.log("智能巡航高度选择: Y=" + cruiseAltitude);
 
         List<ChunkPos> chunkPath = findChunkPath(startPos, targetPos, cruiseAltitude);
-        if (chunkPath == null) { // A* 未找到路径时也应返回null
+        if (chunkPath == null) {
+            DebugUtils.log("§cA* 寻路失败，未找到区块路径。");
             return null;
         }
+        DebugUtils.log("A* 找到 " + chunkPath.size() + " 个区块节点。");
 
-        return smoothPath(startVec, targetVec, chunkPath, cruiseAltitude);
+        List<Vec3d> smoothedPath = smoothPath(startVec, targetVec, chunkPath, cruiseAltitude);
+        DebugUtils.log("路径平滑完成，生成 " + smoothedPath.size() + " 个精确路径点。");
+        return smoothedPath;
     }
 
     private List<Vec3d> smoothPath(Vec3d startPoint, Vec3d endPoint, List<ChunkPos> path, int cruiseAltitude) {
@@ -71,7 +79,6 @@ public class Pathfinder {
         waypoints.add(endPoint);
         return waypoints;
     }
-
 
     private List<ChunkPos> findChunkPath(ChunkPos startPos, ChunkPos targetPos, int cruiseAltitude) {
         PathNode startNode = new PathNode(startPos);

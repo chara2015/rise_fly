@@ -1,9 +1,9 @@
 {
 	"required": true,
-	"package": "rise_fly.mixin.client",
+	"package": "rise_fly.client.mixin",
 	"compatibilityLevel": "JAVA_17",
 	"client": [
-		"ExampleClientMixin"
+		"ClientPlayerEntityMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1
