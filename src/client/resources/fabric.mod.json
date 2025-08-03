@@ -16,7 +16,7 @@
 	"environment": "client",
 	"entrypoints": {
 		"client": [
-			"rise_fly.Rise_flyClient"
+			"rise_fly.client.Rise_flyClient"
 		],
 		"fabric-datagen": [
 			"rise_fly.Rise_flyDataGenerator"
