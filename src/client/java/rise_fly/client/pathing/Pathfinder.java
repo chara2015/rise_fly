@@ -1,8 +1,12 @@
 package rise_fly.client.pathing;
 
+import net.minecraft.client.MinecraftClient;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.ChunkPos;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.biome.Biome;
+import net.minecraft.registry.RegistryKeys;
+import net.minecraft.registry.Registry;
 import rise_fly.client.cache.WorldCache;
 import rise_fly.client.util.DebugUtils;
 
@@ -28,24 +32,15 @@ public class Pathfinder {
         ChunkPos startPos = new ChunkPos(BlockPos.ofFloored(startVec));
         ChunkPos targetPos = new ChunkPos(BlockPos.ofFloored(targetVec));
 
-        // --- 核心修改：多层次高度搜索 ---
-        // 1. 定义要尝试的飞行高度层列表
         List<Integer> altitudesToTry = new ArrayList<>();
         int targetY = (int) targetVec.y;
-
-        // 优先加入目标高度和玩家当前高度
         altitudesToTry.add(targetY);
         altitudesToTry.add((int)startVec.y);
-
-        // 加入其他备选通用高度
-        altitudesToTry.add(120); // 下界顶部
-        altitudesToTry.add(200); // 主世界巡航
-        altitudesToTry.add(80);  // 中低空
-
-        // 移除重复的高度
+        altitudesToTry.add(120);
+        altitudesToTry.add(200);
+        altitudesToTry.add(80);
         List<Integer> distinctAltitudes = altitudesToTry.stream().distinct().toList();
 
-        // 2. 依次尝试每个高度层
         for (int altitude : distinctAltitudes) {
             DebugUtils.log("正在尝试在 Y=" + altitude + " 高度寻找路径...");
             List<ChunkPos> chunkPath = findChunkPath(startPos, targetPos, altitude);
@@ -60,6 +55,51 @@ public class Pathfinder {
 
         DebugUtils.log("§c在所有高度层均未找到可用路径。");
         return null;
+    }
+
+    public List<Vec3d> findPredictivePath(Vec3d startVec, Vec3d targetVec, int renderDistance) {
+        DebugUtils.log("开始预测性路径计算...");
+        List<Vec3d> predictivePath = new ArrayList<>();
+
+        Vec3d currentPoint = startVec;
+        double distanceToTarget = currentPoint.distanceTo(targetVec);
+
+        while (distanceToTarget > renderDistance * 0.8) {
+            Vec3d direction = targetVec.subtract(currentPoint).normalize();
+            Vec3d nextSegmentEnd = currentPoint.add(direction.multiply(renderDistance * 0.8));
+
+            ChunkPos chunkPos = new ChunkPos(BlockPos.ofFloored(nextSegmentEnd));
+            int predictedAltitude = getPredictedAltitudeForChunk(chunkPos);
+
+            predictivePath.add(new Vec3d(nextSegmentEnd.x, predictedAltitude, nextSegmentEnd.z));
+            currentPoint = nextSegmentEnd;
+            distanceToTarget = currentPoint.distanceTo(targetVec);
+        }
+
+        predictivePath.add(targetVec);
+        return predictivePath;
+    }
+
+    private int getPredictedAltitudeForChunk(ChunkPos pos) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.world == null) return 128;
+
+        Registry<Biome> biomeRegistry = client.world.getRegistryManager().get(RegistryKeys.BIOME);
+        Biome biome = client.world.getBiome(pos.getStartPos()).value();
+
+        String biomeId = biomeRegistry.getId(biome).getPath();
+
+        if (biomeId.contains("ocean") || biomeId.contains("beach")) {
+            return 80;
+        }
+        if (biomeId.contains("mountain") || biomeId.contains("hills") || biomeId.contains("plateau")) {
+            return 200;
+        }
+        if (biomeId.contains("deep_dark")) {
+            return -20;
+        }
+
+        return 120;
     }
 
     private List<Vec3d> smoothPath(Vec3d startPoint, Vec3d endPoint, List<ChunkPos> path, int cruiseAltitude) {
@@ -99,6 +139,20 @@ public class Pathfinder {
         return waypoints;
     }
 
+    public boolean isTraversable(Vec3d from, Vec3d to) {
+        if (WorldCache.INSTANCE.isSolid(BlockPos.ofFloored(from)) || WorldCache.INSTANCE.isSolid(BlockPos.ofFloored(to))) {
+            return false;
+        }
+
+        int samples = (int) Math.ceil(from.distanceTo(to) / 8);
+        for (int i = 0; i <= samples; i++) {
+            Vec3d samplePoint = from.lerp(to, (double)i / samples);
+            if (WorldCache.INSTANCE.isSolid(BlockPos.ofFloored(samplePoint))) {
+                return false;
+            }
+        }
+        return true;
+    }
 
     private List<ChunkPos> findChunkPath(ChunkPos startPos, ChunkPos targetPos, int cruiseAltitude) {
         PathNode startNode = new PathNode(startPos);
@@ -135,22 +189,6 @@ public class Pathfinder {
             }
         }
         return null;
-    }
-
-    private boolean isTraversable(Vec3d from, Vec3d to) {
-        // 在检查路径时，也检查起点和终点本身是否在方块里
-        if (WorldCache.INSTANCE.isSolid(BlockPos.ofFloored(from)) || WorldCache.INSTANCE.isSolid(BlockPos.ofFloored(to))) {
-            return false;
-        }
-
-        int samples = (int) Math.ceil(from.distanceTo(to) / 8);
-        for (int i = 0; i <= samples; i++) {
-            Vec3d samplePoint = from.lerp(to, (double)i / samples);
-            if (WorldCache.INSTANCE.isSolid(BlockPos.ofFloored(samplePoint))) {
-                return false;
-            }
-        }
-        return true;
     }
 
     private List<ChunkPos> retracePath(PathNode startNode, PathNode endNode) {

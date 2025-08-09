@@ -3,13 +3,13 @@
 	"id": "rise_fly",
 	"version": "2.0.5beta",
 	"name": "rise_fly",
-	"description": "HE Team",
+	"description": "Auto fly v2",
 	"authors": [
 		"chara201x"
 	],
 	"contact": {
 		"homepage": "https://fabricmc.net/",
-		"sources": "https://github.com/FabricMC/fabric-example-mod"
+		"sources": "https://github.com/chara2015/rise_fly"
 	},
 	"license": "CC0-1.0",
 	"icon": "assets/rise_fly/icon.png",
@@ -17,9 +17,6 @@
 	"entrypoints": {
 		"client": [
 			"rise_fly.client.Rise_flyClient"
-		],
-		"fabric-datagen": [
-			"rise_fly.Rise_flyDataGenerator"
 		]
 	},
 	"mixins": [
