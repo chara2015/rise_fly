@@ -58,15 +58,10 @@ public class FlightControl {
         this.lastCheckPosition = MinecraftClient.getInstance().player != null ? MinecraftClient.getInstance().player.getPos() : Vec3d.ZERO;
     }
 
-    public void updatePathSegment(List<Vec3d> newSegment) {
-        if (currentPath == null || pathIndex >= currentPath.size()) return;
-
-        List<Vec3d> newPath = new ArrayList<>();
-        newPath.addAll(newSegment);
-        newPath.addAll(currentPath.subList(pathIndex, currentPath.size()));
-
+    public void updatePathToSegment(List<Vec3d> newPath) {
         this.currentPath = newPath;
-        this.pathIndex = newSegment.size() - 1;
+        this.pathIndex = 0;
+        DebugUtils.log("§a路径已无缝切换，继续飞行。");
     }
 
     public void onClientTick(MinecraftClient client) {
@@ -84,6 +79,8 @@ public class FlightControl {
         FlightManager.resetControls();
 
         Vec3d nextTarget = currentPath.get(pathIndex);
+
+        // 重新引入视角控制，使其始终对准下一个路径点
         AimingUtils.aimAt(player, nextTarget);
 
         double horizontalDistance = player.getPos().multiply(1, 0, 1).distanceTo(nextTarget.multiply(1, 0, 1));
@@ -102,22 +99,16 @@ public class FlightControl {
             if (pathIndex >= currentPath.size()) {
                 setEnabled(false);
             }
-            if (Rise_flyClient.isPredictiveFlight() && pathIndex < currentPath.size()) {
-                DebugUtils.log("已到达预测性路径过渡点，请求重新规划。");
-                Rise_flyClient.requestReplan();
-            }
         }
 
-        // 新增：前瞻性检查，周期性地检查前方路径是否可优化
         proactiveCheckCounter++;
-        if (proactiveCheckCounter > 40 && !Rise_flyClient.isPredictiveFlight()) {
+        if (proactiveCheckCounter > 40) {
             proactiveCheckCounter = 0;
             if (currentPath.size() > pathIndex + 2) {
                 Vec3d startPoint = player.getPos();
                 Vec3d endPoint = currentPath.get(pathIndex + 2);
                 if (Pathfinder.INSTANCE.isTraversable(startPoint, endPoint)) {
                     DebugUtils.log("§b发现更优路径，正在前瞻性重新规划...");
-                    Rise_flyClient.requestProactiveReplan(endPoint);
                 }
             }
         }
@@ -150,10 +141,14 @@ public class FlightControl {
     }
 
     private void executeSpiralClimb() {
-        FlightManager.holdForward = false;
         FlightManager.jumpPressTicks = 2;
 
         if (this.spiralClimbTicks % 40 < 20) {
+            FlightManager.holdLeft = true;
+            FlightManager.holdRight = false;
+        } else {
+            FlightManager.holdLeft = false;
+            FlightManager.holdRight = true;
         }
         this.spiralClimbTicks++;
     }

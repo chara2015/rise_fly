@@ -12,8 +12,12 @@ import rise_fly.client.config.ConfigManager;
 import rise_fly.client.flight.FlightControl;
 import rise_fly.client.pathing.Pathfinder;
 import rise_fly.client.util.DebugUtils;
+import rise_fly.client.pathing.FlightMode;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 public class Rise_flyClient implements ClientModInitializer {
 
@@ -21,14 +25,24 @@ public class Rise_flyClient implements ClientModInitializer {
     private Vec3d finalTargetPosition;
     private List<Vec3d> currentPath;
 
-    private static boolean isPredictiveFlight = false;
+    private static AtomicBoolean isReplanScheduled = new AtomicBoolean(false);
+
+    private static FlightMode flightMode = FlightMode.NORMAL;
 
     public Rise_flyClient() {
         INSTANCE = this;
     }
 
-    public static boolean isPredictiveFlight() {
-        return isPredictiveFlight;
+    public static boolean isLongDistanceFlight() {
+        return false;
+    }
+
+    public static void setFlightMode(FlightMode mode) {
+        flightMode = mode;
+    }
+
+    public static FlightMode getFlightMode() {
+        return flightMode;
     }
 
     @Override
@@ -42,12 +56,51 @@ public class Rise_flyClient implements ClientModInitializer {
             WorldCache.INSTANCE.onTick(client);
             FlightControl.INSTANCE.onClientTick(client);
         });
+
+        WorldCache.INSTANCE.setOnChunkLoadedCallback(this::onNewChunkLoaded);
+    }
+
+    private void onNewChunkLoaded(Void unused) {
+        if(!isReplanScheduled.get()) {
+            isReplanScheduled.set(true);
+            MinecraftClient client = MinecraftClient.getInstance();
+            if (client.player == null) return;
+
+            new Thread(() -> {
+                try {
+                    Thread.sleep(250);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                client.execute(this::proactiveReplan);
+            }).start();
+        }
+    }
+
+    private void proactiveReplan() {
+        DebugUtils.log("§b后台实时重新规划启动...");
+        new Thread(() -> {
+            List<Vec3d> path;
+            if(flightMode == FlightMode.X_MODE) {
+                path = Pathfinder.INSTANCE.findPathXMode(MinecraftClient.getInstance().player.getPos(), finalTargetPosition);
+            } else {
+                path = Pathfinder.INSTANCE.findPath(MinecraftClient.getInstance().player.getPos(), finalTargetPosition);
+            }
+
+            MinecraftClient.getInstance().execute(() -> {
+                if (path != null && !path.isEmpty()) {
+                    DebugUtils.log("§a后台精确路径已生成，正在无缝切换！");
+                    this.currentPath = path;
+                    FlightControl.INSTANCE.updatePathToSegment(path);
+                }
+                isReplanScheduled.set(false);
+            });
+        }).start();
     }
 
     public void startFlight(Vec3d target) {
         this.finalTargetPosition = target;
         Pathfinder.INSTANCE.clearCosts();
-        isPredictiveFlight = false;
         replan(null, 0);
     }
 
@@ -57,83 +110,57 @@ public class Rise_flyClient implements ClientModInitializer {
 
         Vec3d startVec = client.player.getPos();
 
-        if (oldPath != null && !oldPath.isEmpty() && oldPathIndex < oldPath.size() && !isPredictiveFlight) {
-            Vec3d nextTarget = oldPath.get(oldPathIndex);
-            DebugUtils.log("§e正在尝试从当前位置到旧路径点进行局部重新规划...");
+        if (oldPath != null && !oldPath.isEmpty() && oldPathIndex < oldPath.size()) {
+            DebugUtils.log("§e正在进行局部增量规划...");
+            Vec3d localTarget = oldPath.get(Math.min(oldPathIndex + 5, oldPath.size() - 1));
 
-            // 关键的多线程实现：在后台线程进行计算，避免主线程卡顿
             new Thread(() -> {
-                List<Vec3d> newLocalPath = Pathfinder.INSTANCE.findPath(startVec, nextTarget);
+                List<Vec3d> localPath = Pathfinder.INSTANCE.findPath(startVec, localTarget);
 
-                // 计算完成后，将结果传回主线程进行处理
                 client.execute(() -> {
-                    if (newLocalPath != null && !newLocalPath.isEmpty()) {
-                        DebugUtils.log("§a局部重新规划成功！正在拼接路径...");
-                        newLocalPath.addAll(oldPath.subList(oldPathIndex, oldPath.size()));
-                        this.currentPath = newLocalPath;
-                        FlightControl.INSTANCE.setEnabled(true);
-                        FlightControl.INSTANCE.setPath(this.currentPath);
+                    if (localPath != null && !localPath.isEmpty()) {
+                        DebugUtils.log("§a局部增量规划成功，正在更新路径...");
+
+                        List<Vec3d> newPath = Stream.concat(
+                                localPath.stream().limit(localPath.size() - 1),
+                                oldPath.stream().skip(oldPathIndex)
+                        ).collect(Collectors.toList());
+
+                        this.currentPath = newPath;
+                        FlightControl.INSTANCE.updatePathToSegment(newPath);
                     } else {
-                        DebugUtils.log("§c局部重新规划失败，尝试全局重新规划。");
-                        replanToFinalTarget(startVec);
+                        startGlobalReplan(startVec);
                     }
                 });
             }).start();
         } else {
-            replanToFinalTarget(startVec);
+            startGlobalReplan(startVec);
         }
     }
 
-    private void replanToFinalTarget(Vec3d startVec) {
+    private void startGlobalReplan(Vec3d startVec) {
         MinecraftClient client = MinecraftClient.getInstance();
-        if (client.player == null) return;
+        client.player.sendMessage(Text.literal("§e[RiseFly] 正在进行全局精确路径规划..."), true);
+        new Thread(() -> {
+            List<Vec3d> path;
+            if(flightMode == FlightMode.X_MODE) {
+                path = Pathfinder.INSTANCE.findPathXMode(startVec, this.finalTargetPosition);
+            } else {
+                path = Pathfinder.INSTANCE.findPath(startVec, this.finalTargetPosition);
+            }
 
-        double distance = startVec.distanceTo(finalTargetPosition);
-        int renderDistance = client.options.getClampedViewDistance() * 16;
-
-        if (distance > renderDistance * 0.8) {
-            DebugUtils.log("§e目标距离过远，进入预测性路径规划模式...");
-            isPredictiveFlight = true;
-
-            // 关键的多线程实现：在后台线程进行计算，避免主线程卡顿
-            new Thread(() -> {
-                List<Vec3d> predictivePath = Pathfinder.INSTANCE.findPredictivePath(startVec, this.finalTargetPosition, renderDistance);
-
-                // 计算完成后，将结果传回主线程进行处理
-                client.execute(() -> {
-                    if (predictivePath != null && !predictivePath.isEmpty()) {
-                        this.currentPath = predictivePath;
-                        FlightControl.INSTANCE.setEnabled(true);
-                        FlightControl.INSTANCE.setPath(this.currentPath);
-                        client.player.sendMessage(Text.literal("§e[RiseFly] 目标距离过远，正在进行预测性飞行。"), true);
-                    } else {
-                        client.player.sendMessage(Text.literal("§c[RiseFly] 预测性路径规划失败，请手动靠近目标。"), false);
-                        FlightControl.INSTANCE.setEnabled(false);
-                    }
-                });
-            }).start();
-        } else {
-            isPredictiveFlight = false;
-            client.player.sendMessage(Text.literal("§e[RiseFly] 正在进行精确路径规划..."), true);
-
-            // 关键的多线程实现：在后台线程进行计算，避免主线程卡顿
-            new Thread(() -> {
-                List<Vec3d> path = Pathfinder.INSTANCE.findPath(startVec, this.finalTargetPosition);
-
-                // 计算完成后，将结果传回主线程进行处理
-                client.execute(() -> {
-                    if (path != null && !path.isEmpty()) {
-                        this.currentPath = path;
-                        FlightControl.INSTANCE.setEnabled(true);
-                        FlightControl.INSTANCE.setPath(this.currentPath);
-                        client.player.sendMessage(Text.literal("§a[RiseFly] 精确路径已生成，开始飞行！"), true);
-                    } else {
-                        client.player.sendMessage(Text.literal("§c[RiseFly] 精确路径规划失败，找不到路径！"), false);
-                        FlightControl.INSTANCE.setEnabled(false);
-                    }
-                });
-            }).start();
-        }
+            client.execute(() -> {
+                if (path != null && !path.isEmpty()) {
+                    this.currentPath = path;
+                    FlightControl.INSTANCE.setEnabled(true);
+                    FlightControl.INSTANCE.setPath(this.currentPath);
+                    client.player.sendMessage(Text.literal("§a[RiseFly] 精确路径已生成，开始飞行！"), true);
+                } else {
+                    client.player.sendMessage(Text.literal("§c[RiseFly] 精确路径规划失败，找不到路径！"), false);
+                    FlightControl.INSTANCE.setEnabled(false);
+                }
+            });
+        }).start();
     }
 
     public static void requestReplan() {
@@ -143,28 +170,9 @@ public class Rise_flyClient implements ClientModInitializer {
         }
     }
 
-    public static void requestProactiveReplan(Vec3d target) {
-        if (INSTANCE != null) {
-            MinecraftClient client = MinecraftClient.getInstance();
-            if (client.player == null) return;
-
-            // 关键的多线程实现：在后台线程进行快速的局部规划
-            new Thread(() -> {
-                List<Vec3d> newPathSegment = Pathfinder.INSTANCE.findPath(client.player.getPos(), target);
-
-                // 计算完成后，将结果传回主线程进行处理
-                client.execute(() -> {
-                    if (newPathSegment != null && !newPathSegment.isEmpty()) {
-                        DebugUtils.log("§b前瞻性重新规划成功！正在更新路径...");
-                        FlightControl.INSTANCE.updatePathSegment(newPathSegment);
-                    }
-                });
-            }).start();
-        }
-    }
-
     public void stopFlight() {
-        isPredictiveFlight = false;
         FlightControl.INSTANCE.setEnabled(false);
+        Pathfinder.INSTANCE.clearCosts();
+        this.currentPath = null;
     }
 }

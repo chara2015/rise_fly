@@ -17,10 +17,10 @@ public class ClientPlayerEntityMixin {
         if (FlightControl.INSTANCE.isEnabled()) {
             MinecraftClient client = MinecraftClient.getInstance();
 
-            // 模拟长按W键
             client.options.forwardKey.setPressed(FlightManager.holdForward);
+            client.options.leftKey.setPressed(FlightManager.holdLeft);
+            client.options.rightKey.setPressed(FlightManager.holdRight);
 
-            // 模拟按一下跳跃键
             if (FlightManager.jumpPressTicks > 0) {
                 client.options.jumpKey.setPressed(true);
                 FlightManager.jumpPressTicks--;
@@ -28,7 +28,6 @@ public class ClientPlayerEntityMixin {
                 client.options.jumpKey.setPressed(false);
             }
 
-            // 模拟按一下潜行键 (新)
             if (FlightManager.sneakPressTicks > 0) {
                 client.options.sneakKey.setPressed(true);
                 FlightManager.sneakPressTicks--;

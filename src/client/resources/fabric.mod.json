@@ -1,14 +1,14 @@
 {
 	"schemaVersion": 1,
 	"id": "rise_fly",
-	"version": "2.0.5beta",
+	"version": "2.0.6beta",
 	"name": "rise_fly",
 	"description": "Auto fly v2",
 	"authors": [
 		"chara201x"
 	],
 	"contact": {
-		"homepage": "https://fabricmc.net/",
+		"homepage": "https://qm.qq.com/q/iMXklYGCxq",
 		"sources": "https://github.com/chara2015/rise_fly"
 	},
 	"license": "CC0-1.0",
