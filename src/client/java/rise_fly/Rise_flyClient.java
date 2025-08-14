@@ -10,22 +10,23 @@ import rise_fly.client.cache.WorldCache;
 import rise_fly.client.command.CommandManager;
 import rise_fly.client.config.ConfigManager;
 import rise_fly.client.flight.FlightControl;
+import rise_fly.client.pathing.FlightMode;
 import rise_fly.client.pathing.Pathfinder;
 import rise_fly.client.util.DebugUtils;
-import rise_fly.client.pathing.FlightMode;
 
 import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.*;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 public class Rise_flyClient implements ClientModInitializer {
 
-    private static Rise_flyClient INSTANCE;
+    public static Rise_flyClient INSTANCE;
     private Vec3d finalTargetPosition;
     private List<Vec3d> currentPath;
 
-    private static AtomicBoolean isReplanScheduled = new AtomicBoolean(false);
+    private final ExecutorService pathfindingExecutor = Executors.newSingleThreadExecutor();
+    private Future<?> currentPathfindingTask;
 
     private static FlightMode flightMode = FlightMode.NORMAL;
 
@@ -60,53 +61,53 @@ public class Rise_flyClient implements ClientModInitializer {
         WorldCache.INSTANCE.setOnChunkLoadedCallback(this::onNewChunkLoaded);
     }
 
+    public void onClientClose() {
+        pathfindingExecutor.shutdownNow();
+    }
+
+
     private void onNewChunkLoaded(Void unused) {
-        if(!isReplanScheduled.get()) {
-            isReplanScheduled.set(true);
+        if (FlightControl.INSTANCE.isEnabled()) {
             MinecraftClient client = MinecraftClient.getInstance();
             if (client.player == null) return;
-
-            new Thread(() -> {
-                try {
-                    Thread.sleep(250);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-                client.execute(this::proactiveReplan);
-            }).start();
+            client.execute(this::proactiveReplan);
         }
     }
 
     private void proactiveReplan() {
+        if (currentPathfindingTask != null && !currentPathfindingTask.isDone()) {
+            currentPathfindingTask.cancel(true);
+        }
         DebugUtils.log("§b后台实时重新规划启动...");
-        new Thread(() -> {
-            List<Vec3d> path;
-            if(flightMode == FlightMode.X_MODE) {
-                path = Pathfinder.INSTANCE.findPathXMode(MinecraftClient.getInstance().player.getPos(), finalTargetPosition);
-            } else {
-                path = Pathfinder.INSTANCE.findPath(MinecraftClient.getInstance().player.getPos(), finalTargetPosition);
-            }
+        currentPathfindingTask = pathfindingExecutor.submit(() -> {
+            List<Vec3d> path = Pathfinder.INSTANCE.findPath(MinecraftClient.getInstance().player.getPos(), finalTargetPosition, flightMode);
 
             MinecraftClient.getInstance().execute(() -> {
                 if (path != null && !path.isEmpty()) {
                     DebugUtils.log("§a后台精确路径已生成，正在无缝切换！");
                     this.currentPath = path;
                     FlightControl.INSTANCE.updatePathToSegment(path);
+                } else {
+                    DebugUtils.log("§c后台实时规划失败，将继续使用旧路径。");
                 }
-                isReplanScheduled.set(false);
             });
-        }).start();
+        });
     }
 
     public void startFlight(Vec3d target) {
+        stopFlight();
         this.finalTargetPosition = target;
         Pathfinder.INSTANCE.clearCosts();
-        replan(null, 0);
+        startGlobalReplan(MinecraftClient.getInstance().player.getPos());
     }
 
     public void replan(List<Vec3d> oldPath, int oldPathIndex) {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null) return;
+
+        if (currentPathfindingTask != null && !currentPathfindingTask.isDone()) {
+            currentPathfindingTask.cancel(true);
+        }
 
         Vec3d startVec = client.player.getPos();
 
@@ -114,9 +115,8 @@ public class Rise_flyClient implements ClientModInitializer {
             DebugUtils.log("§e正在进行局部增量规划...");
             Vec3d localTarget = oldPath.get(Math.min(oldPathIndex + 5, oldPath.size() - 1));
 
-            new Thread(() -> {
-                List<Vec3d> localPath = Pathfinder.INSTANCE.findPath(startVec, localTarget);
-
+            currentPathfindingTask = pathfindingExecutor.submit(() -> {
+                List<Vec3d> localPath = Pathfinder.INSTANCE.findPath(startVec, localTarget, flightMode);
                 client.execute(() -> {
                     if (localPath != null && !localPath.isEmpty()) {
                         DebugUtils.log("§a局部增量规划成功，正在更新路径...");
@@ -132,7 +132,7 @@ public class Rise_flyClient implements ClientModInitializer {
                         startGlobalReplan(startVec);
                     }
                 });
-            }).start();
+            });
         } else {
             startGlobalReplan(startVec);
         }
@@ -141,13 +141,13 @@ public class Rise_flyClient implements ClientModInitializer {
     private void startGlobalReplan(Vec3d startVec) {
         MinecraftClient client = MinecraftClient.getInstance();
         client.player.sendMessage(Text.literal("§e[RiseFly] 正在进行全局精确路径规划..."), true);
-        new Thread(() -> {
-            List<Vec3d> path;
-            if(flightMode == FlightMode.X_MODE) {
-                path = Pathfinder.INSTANCE.findPathXMode(startVec, this.finalTargetPosition);
-            } else {
-                path = Pathfinder.INSTANCE.findPath(startVec, this.finalTargetPosition);
-            }
+
+        if (currentPathfindingTask != null && !currentPathfindingTask.isDone()) {
+            currentPathfindingTask.cancel(true);
+        }
+
+        currentPathfindingTask = pathfindingExecutor.submit(() -> {
+            List<Vec3d> path = Pathfinder.INSTANCE.findPath(startVec, this.finalTargetPosition, flightMode);
 
             client.execute(() -> {
                 if (path != null && !path.isEmpty()) {
@@ -160,7 +160,7 @@ public class Rise_flyClient implements ClientModInitializer {
                     FlightControl.INSTANCE.setEnabled(false);
                 }
             });
-        }).start();
+        });
     }
 
     public static void requestReplan() {
@@ -171,6 +171,10 @@ public class Rise_flyClient implements ClientModInitializer {
     }
 
     public void stopFlight() {
+        if (currentPathfindingTask != null && !currentPathfindingTask.isDone()) {
+            currentPathfindingTask.cancel(true);
+            currentPathfindingTask = null;
+        }
         FlightControl.INSTANCE.setEnabled(false);
         Pathfinder.INSTANCE.clearCosts();
         this.currentPath = null;

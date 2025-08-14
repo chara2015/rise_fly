@@ -1,7 +1,7 @@
 {
 	"schemaVersion": 1,
 	"id": "rise_fly",
-	"version": "2.0.6",
+	"version": "2.0.7alpha",
 	"name": "rise_fly",
 	"description": "Auto fly v2",
 	"authors": [

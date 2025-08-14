@@ -4,77 +4,119 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.ChunkPos;
 import net.minecraft.util.math.Vec3d;
-import net.minecraft.world.biome.Biome;
-import net.minecraft.registry.RegistryKeys;
-import net.minecraft.registry.Registry;
 import rise_fly.client.cache.BlockStatus;
 import rise_fly.client.cache.WorldCache;
 import rise_fly.client.util.DebugUtils;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 public class Pathfinder {
     public static final Pathfinder INSTANCE = new Pathfinder();
     private final Map<ChunkPos, Double> costMap = new ConcurrentHashMap<>();
 
+    // 寻路策略的常量
+    private static final int DEFAULT_CRUISE_ALTITUDE = 100;
+    private static final int LONG_DISTANCE_THRESHOLD = 500; // 优化：长距离寻路的阈值，单位为区块
+    private static final List<Integer> FALLBACK_ALTITUDES = Arrays.asList(200, 80, 120, 256, 320);
+    private static final List<Integer> X_MODE_ALTITUDES = Arrays.asList(320, 256, 200, 120);
+    private static final int DETOUR_CHUNK_DISTANCE = 5;
+
     private Pathfinder() {}
 
     public void reportBadChunk(ChunkPos pos) {
-        costMap.put(pos, costMap.getOrDefault(pos, 1.0) * 2);
+        costMap.compute(pos, (k, v) -> v == null ? 2.0 : v * 2);
     }
 
     public void clearCosts() {
         costMap.clear();
     }
 
-    public List<Vec3d> findPath(Vec3d startVec, Vec3d targetVec) {
-        DebugUtils.log("开始路径计算...");
+    public List<Vec3d> findPath(Vec3d startVec, Vec3d targetVec, FlightMode mode) {
+        DebugUtils.log("开始路径计算，模式: " + mode);
         ChunkPos startPos = new ChunkPos(BlockPos.ofFloored(startVec));
         ChunkPos targetPos = new ChunkPos(BlockPos.ofFloored(targetVec));
 
-        // 策略：优先级 1 - 尝试以当前高度直接寻路
-        int initialAltitude = (int)startVec.y;
-        DebugUtils.log("§e优先级1: 尝试当前高度 Y=" + initialAltitude);
-        List<ChunkPos> chunkPath = findChunkPath(startPos, targetPos, initialAltitude);
-        if (chunkPath != null && !chunkPath.isEmpty()) {
-            DebugUtils.log("§a成功找到路径！");
-            return smoothPath(startVec, targetVec, chunkPath, initialAltitude);
+        if (startPos.getChebyshevDistance(targetPos) > LONG_DISTANCE_THRESHOLD && mode == FlightMode.NORMAL) {
+            DebugUtils.log("§e检测到超远距离飞行，自动切换到 X_MODE 高空巡航。");
+            mode = FlightMode.X_MODE;
         }
 
-        // 策略：优先级 2 - 尝试左右绕行
-        DebugUtils.log("§e优先级2: 尝试左右绕行...");
-        double horizontalOffsetDistance = 16 * 5;
-        Vec3d direction = targetVec.subtract(startVec).normalize();
-        Vec3d perpendicularDirection = new Vec3d(-direction.z, 0, direction.x).normalize();
+        List<Function<Void, List<ChunkPos>>> strategies = new ArrayList<>();
 
-        Vec3d leftOffsetTarget = targetVec.add(perpendicularDirection.multiply(horizontalOffsetDistance));
-        List<ChunkPos> leftPath = findChunkPath(startPos, new ChunkPos(BlockPos.ofFloored(leftOffsetTarget)), initialAltitude);
-        if (leftPath != null && !leftPath.isEmpty()) {
-            DebugUtils.log("§a成功找到左绕行路径！");
-            List<Vec3d> smoothedPath = smoothPath(startVec, leftOffsetTarget, leftPath, initialAltitude);
-            smoothedPath.add(targetVec);
-            return smoothedPath;
+        if (mode == FlightMode.NORMAL) {
+            strategies.add(v -> {
+                int initialAltitude = (int) startVec.y;
+                DebugUtils.log("§e策略1: 尝试当前高度 Y=" + initialAltitude);
+                try {
+                    return findChunkPath(startPos, targetPos, initialAltitude);
+                } catch (InterruptedException e) {
+                    return null;
+                }
+            });
+            strategies.add(v -> {
+                DebugUtils.log("§e策略2: 尝试左右绕行...");
+                try {
+                    List<ChunkPos> leftPath = findDetourPath(startPos, targetPos, startVec, targetVec, -1);
+                    if (leftPath != null) return leftPath;
+
+                    List<ChunkPos> rightPath = findDetourPath(startPos, targetPos, startVec, targetVec, 1);
+                    if (rightPath != null) return rightPath;
+                } catch (InterruptedException e) {
+                    return null;
+                }
+                return null;
+            });
+            strategies.add(v -> {
+                DebugUtils.log("§e策略3: 尝试备选高度...");
+                for (int altitude : FALLBACK_ALTITUDES) {
+                    try {
+                        DebugUtils.log("正在尝试备选高度 Y=" + altitude + " 寻找路径...");
+                        List<ChunkPos> chunkPath = findChunkPath(startPos, targetPos, altitude);
+                        if (chunkPath != null && !chunkPath.isEmpty()) {
+                            DebugUtils.log("§a成功在备选高度 Y=" + altitude + " 找到路径！");
+                            return chunkPath;
+                        }
+                    } catch (InterruptedException e) {
+                        return null;
+                    }
+                }
+                return null;
+            });
+
+        } else if (mode == FlightMode.X_MODE) {
+            strategies.add(v -> {
+                DebugUtils.log("§eX 模式策略: 尝试高空...");
+                for (int altitude : X_MODE_ALTITUDES) {
+                    try {
+                        DebugUtils.log("正在尝试高空 Y=" + altitude + " 寻找路径...");
+                        List<ChunkPos> chunkPath = findChunkPath(startPos, targetPos, altitude);
+                        if (chunkPath != null && !chunkPath.isEmpty()) {
+                            DebugUtils.log("§aX 模式成功在 Y=" + altitude + " 找到路径！");
+                            return chunkPath;
+                        }
+                    } catch (InterruptedException e) {
+                        return null;
+                    }
+                }
+                return null;
+            });
         }
 
-        Vec3d rightOffsetTarget = targetVec.subtract(perpendicularDirection.multiply(horizontalOffsetDistance));
-        List<ChunkPos> rightPath = findChunkPath(startPos, new ChunkPos(BlockPos.ofFloored(rightOffsetTarget)), initialAltitude);
-        if (rightPath != null && !rightPath.isEmpty()) {
-            DebugUtils.log("§a成功找到右绕行路径！");
-            List<Vec3d> smoothedPath = smoothPath(startVec, rightOffsetTarget, rightPath, initialAltitude);
-            smoothedPath.add(targetVec);
-            return smoothedPath;
-        }
-
-        // 策略：优先级 3 - 尝试更改高度
-        DebugUtils.log("§e优先级3: 尝试更改高度...");
-        List<Integer> fallbackAltitudes = Arrays.asList(200, 80, 120);
-        for (int altitude : fallbackAltitudes) {
-            DebugUtils.log("正在尝试备选高度 Y=" + altitude + " 寻找路径...");
-            chunkPath = findChunkPath(startPos, targetPos, altitude);
+        List<ChunkPos> chunkPath = null;
+        for (Function<Void, List<ChunkPos>> strategy : strategies) {
+            if (Thread.currentThread().isInterrupted()) {
+                return null;
+            }
+            chunkPath = strategy.apply(null);
             if (chunkPath != null && !chunkPath.isEmpty()) {
-                DebugUtils.log("§a成功在备选高度 Y=" + altitude + " 找到路径！");
-                return smoothPath(startVec, targetVec, chunkPath, altitude);
+                List<Vec3d> smoothedPath = smoothPath(startVec, targetVec, chunkPath);
+                if (Thread.currentThread().isInterrupted()) {
+                    return null;
+                }
+                return smoothedPath;
             }
         }
 
@@ -82,49 +124,52 @@ public class Pathfinder {
         return null;
     }
 
-    public List<Vec3d> findPathXMode(Vec3d startVec, Vec3d targetVec) {
-        DebugUtils.log("开始 X 模式路径计算...");
-        ChunkPos startPos = new ChunkPos(BlockPos.ofFloored(startVec));
-        ChunkPos targetPos = new ChunkPos(BlockPos.ofFloored(targetVec));
+    private List<ChunkPos> findDetourPath(ChunkPos startPos, ChunkPos targetPos, Vec3d startVec, Vec3d targetVec, int side) throws InterruptedException {
+        Vec3d direction = targetVec.subtract(startVec).normalize();
+        Vec3d perpendicularDirection = new Vec3d(-direction.z, 0, direction.x).normalize();
+        Vec3d offsetTarget = targetVec.add(perpendicularDirection.multiply(16.0 * DETOUR_CHUNK_DISTANCE * side));
 
-        List<Integer> xModeAltitudes = Arrays.asList(320, 256, 200, 120);
-        for (int altitude : xModeAltitudes) {
-            DebugUtils.log("§eX 模式: 尝试高空 Y=" + altitude);
-            List<ChunkPos> chunkPath = findChunkPath(startPos, targetPos, altitude);
-            if (chunkPath != null && !chunkPath.isEmpty()) {
-                DebugUtils.log("§aX 模式成功在 Y=" + altitude + " 找到路径！");
-                return smoothPath(startVec, targetVec, chunkPath, altitude);
-            }
+        List<ChunkPos> path = findChunkPath(startPos, new ChunkPos(BlockPos.ofFloored(offsetTarget)), (int) startVec.y);
+        if (path != null && !path.isEmpty()) {
+            DebugUtils.log("§a成功找到" + (side == -1 ? "左" : "右") + "绕行路径！");
+            List<Vec3d> smoothedPath = smoothPath(startVec, offsetTarget, path);
+            smoothedPath.add(targetVec);
+            return smoothedPath.stream().map(v -> new ChunkPos(BlockPos.ofFloored(v))).collect(Collectors.toList());
         }
-
-        DebugUtils.log("§cX 模式在所有策略下均未找到可用路径。");
         return null;
     }
 
-    private List<Vec3d> smoothPath(Vec3d startPoint, Vec3d endPoint, List<ChunkPos> path, int cruiseAltitude) {
+    private List<Vec3d> smoothPath(Vec3d startPoint, Vec3d endPoint, List<ChunkPos> path) {
+        if (path == null || path.isEmpty()) {
+            return Collections.singletonList(endPoint);
+        }
+
         List<Vec3d> waypoints = new ArrayList<>();
         waypoints.add(startPoint);
-        if (path.isEmpty()) {
-            waypoints.add(endPoint);
-            return waypoints;
-        }
+
+        Vec3d currentStartPoint = startPoint;
         int currentPathIndex = 0;
-        while(currentPathIndex < path.size()) {
-            Vec3d lastWaypoint = waypoints.get(waypoints.size() - 1);
+        int cruiseAltitude = (int) startPoint.y;
+
+        while (currentPathIndex < path.size()) {
+            if (Thread.currentThread().isInterrupted()) return null;
+
             int nextNodeIndex = path.size() - 1;
-            while(nextNodeIndex > currentPathIndex) {
+            while(nextNodeIndex >= currentPathIndex) {
                 ChunkPos checkChunk = path.get(nextNodeIndex);
                 Vec3d checkPoint = new Vec3d(checkChunk.getCenterX(), cruiseAltitude, checkChunk.getCenterZ());
-                if (isTraversable(lastWaypoint, checkPoint)) {
+                if (isTraversable(currentStartPoint, checkPoint)) {
                     waypoints.add(checkPoint);
-                    currentPathIndex = nextNodeIndex;
+                    currentStartPoint = checkPoint;
+                    currentPathIndex = nextNodeIndex + 1;
                     break;
                 }
                 nextNodeIndex--;
             }
-            if (nextNodeIndex <= currentPathIndex) {
+            if (nextNodeIndex < currentPathIndex) {
                 ChunkPos nextChunk = path.get(currentPathIndex);
                 waypoints.add(new Vec3d(nextChunk.getCenterX(), cruiseAltitude, nextChunk.getCenterZ()));
+                currentStartPoint = waypoints.get(waypoints.size() - 1);
                 currentPathIndex++;
             }
         }
@@ -144,53 +189,71 @@ public class Pathfinder {
         if (checkBlockStatus(from) == BlockStatus.SOLID || checkBlockStatus(to) == BlockStatus.SOLID) {
             return false;
         }
-        int samples = (int) Math.ceil(from.distanceTo(to) / 8);
+
+        double distance = from.distanceTo(to);
+        if (distance == 0) return true;
+
+        int samples = (int) Math.ceil(distance);
         for (int i = 0; i <= samples; i++) {
-            Vec3d samplePoint = from.lerp(to, (double)i / samples);
+            if (Thread.currentThread().isInterrupted()) return false;
+            Vec3d samplePoint = from.lerp(to, (double) i / samples);
             BlockStatus status = checkBlockStatus(samplePoint);
             if (status == BlockStatus.SOLID) {
+                return false;
+            } else if (status == BlockStatus.UNKNOWN) {
                 return false;
             }
         }
         return true;
     }
 
-    private List<ChunkPos> findChunkPath(ChunkPos startPos, ChunkPos targetPos, int cruiseAltitude) {
+    private List<ChunkPos> findChunkPath(ChunkPos startPos, ChunkPos targetPos, int cruiseAltitude) throws InterruptedException {
         PathNode startNode = new PathNode(startPos);
         PathNode targetNode = new PathNode(targetPos);
         PriorityQueue<PathNode> openSet = new PriorityQueue<>();
+        Map<ChunkPos, PathNode> openSetMap = new HashMap<>();
         HashSet<ChunkPos> closedSet = new HashSet<>();
+
         openSet.add(startNode);
+        openSetMap.put(startPos, startNode);
         startNode.gCost = 0;
         startNode.hCost = getDistance(startNode, targetNode);
 
         while (!openSet.isEmpty()) {
+            if (Thread.currentThread().isInterrupted()) {
+                throw new InterruptedException("Pathfinding thread interrupted.");
+            }
+
             PathNode currentNode = openSet.poll();
+            openSetMap.remove(currentNode.pos);
+
             if (currentNode.equals(targetNode)) {
                 return retracePath(startNode, currentNode);
             }
             closedSet.add(currentNode.pos);
             for (PathNode neighbor : getNeighbors(currentNode)) {
+                if (closedSet.contains(neighbor.pos)) {
+                    continue;
+                }
+
                 Vec3d currentNodeCenter = new Vec3d(currentNode.pos.getCenterX(), cruiseAltitude, currentNode.pos.getCenterZ());
                 Vec3d neighborNodeCenter = new Vec3d(neighbor.pos.getCenterX(), cruiseAltitude, neighbor.pos.getCenterZ());
 
-                if (closedSet.contains(neighbor.pos) || !isTraversable(currentNodeCenter, neighborNodeCenter)) {
+                if (!isTraversable(currentNodeCenter, neighborNodeCenter)) {
                     continue;
                 }
 
                 double costMultiplier = costMap.getOrDefault(neighbor.pos, 1.0);
                 double newMovementCostToNeighbor = currentNode.gCost + getDistance(currentNode, neighbor) * costMultiplier;
 
-                if (WorldCache.INSTANCE.getBlockStatus(neighbor.pos.getStartPos()) == BlockStatus.UNKNOWN) {
-                    newMovementCostToNeighbor += 1000;
-                }
-
-                if (newMovementCostToNeighbor < neighbor.gCost || !openSet.contains(neighbor)) {
+                if (newMovementCostToNeighbor < neighbor.gCost || !openSetMap.containsKey(neighbor.pos)) {
                     neighbor.gCost = newMovementCostToNeighbor;
                     neighbor.hCost = getDistance(neighbor, targetNode);
                     neighbor.parent = currentNode;
-                    if (!openSet.contains(neighbor)) {
+
+                    if (!openSetMap.containsKey(neighbor.pos)) {
                         openSet.add(neighbor);
+                        openSetMap.put(neighbor.pos, neighbor);
                     }
                 }
             }
