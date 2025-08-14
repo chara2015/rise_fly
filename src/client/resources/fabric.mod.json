@@ -5,8 +5,9 @@
 	"name": "rise_fly",
 	"description": "Auto fly v2",
 	"authors": [
-		"chara201x"
-	],
+		"chara201x",
+        "gemini"
+    ],
 	"contact": {
 		"homepage": "https://qm.qq.com/q/iMXklYGCxq",
 		"sources": "https://github.com/chara2015/rise_fly"
