@@ -1,12 +1,8 @@
 package rise_fly.client.pathing;
 
-import net.minecraft.client.MinecraftClient;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.ChunkPos;
 import net.minecraft.util.math.Vec3d;
-import net.minecraft.world.biome.Biome;
-import net.minecraft.registry.RegistryKeys;
-import net.minecraft.registry.Registry;
 import rise_fly.client.cache.BlockStatus;
 import rise_fly.client.cache.WorldCache;
 import rise_fly.client.util.DebugUtils;
@@ -132,23 +128,21 @@ public class Pathfinder {
         return waypoints;
     }
 
-    public BlockStatus checkBlockStatus(Vec3d pos) {
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (client == null || client.world == null) {
-            return BlockStatus.UNKNOWN;
-        }
-        return WorldCache.INSTANCE.getBlockStatus(BlockPos.ofFloored(pos));
-    }
-
     public boolean isTraversable(Vec3d from, Vec3d to) {
-        if (checkBlockStatus(from) == BlockStatus.SOLID || checkBlockStatus(to) == BlockStatus.SOLID) {
+        // 检查起点和终点
+        if (WorldCache.INSTANCE.getBlockStatus(BlockPos.ofFloored(from)) != BlockStatus.TRAVERSABLE ||
+                WorldCache.INSTANCE.getBlockStatus(BlockPos.ofFloored(to)) != BlockStatus.TRAVERSABLE) {
             return false;
         }
+
+        // 沿途采样检查
         int samples = (int) Math.ceil(from.distanceTo(to) / 8);
         for (int i = 0; i <= samples; i++) {
             Vec3d samplePoint = from.lerp(to, (double)i / samples);
-            BlockStatus status = checkBlockStatus(samplePoint);
-            if (status == BlockStatus.SOLID) {
+            BlockStatus status = WorldCache.INSTANCE.getBlockStatus(BlockPos.ofFloored(samplePoint));
+
+            // 任何障碍或未知区域都视为不可通行
+            if (status != BlockStatus.TRAVERSABLE) {
                 return false;
             }
         }
@@ -181,7 +175,7 @@ public class Pathfinder {
                 double costMultiplier = costMap.getOrDefault(neighbor.pos, 1.0);
                 double newMovementCostToNeighbor = currentNode.gCost + getDistance(currentNode, neighbor) * costMultiplier;
 
-                if (WorldCache.INSTANCE.getBlockStatus(neighbor.pos.getStartPos()) == BlockStatus.UNKNOWN) {
+                if (WorldCache.INSTANCE.getBlockStatus(neighbor.pos.getStartPos().withY(cruiseAltitude)) == BlockStatus.UNKNOWN) {
                     newMovementCostToNeighbor += 1000;
                 }
 
