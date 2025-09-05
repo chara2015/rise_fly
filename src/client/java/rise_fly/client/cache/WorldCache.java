@@ -1,14 +1,10 @@
 package rise_fly.client.cache;
 
-import net.minecraft.block.BlockState;
-import net.minecraft.block.Blocks;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.world.ClientWorld;
-import net.minecraft.fluid.FluidState;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.ChunkPos;
 import net.minecraft.world.chunk.WorldChunk;
-
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
@@ -47,36 +43,18 @@ public class WorldCache {
                 }
             }
         }
-
-        chunkCache.keySet().removeIf(chunkPos -> {
-            int dx = Math.abs(playerChunkPos.x - chunkPos.x);
-            int dz = Math.abs(playerChunkPos.z - chunkPos.z);
-            return dx > renderDistance + 1 || dz > renderDistance + 1;
-        });
     }
 
-    /**
-     * 核心感知方法：获取一个位置的状态，供AI决策使用。
-     * @param pos 目标位置
-     * @return BlockStatus 状态
-     */
     public BlockStatus getBlockStatus(BlockPos pos) {
         ChunkPos chunkPos = new ChunkPos(pos);
         CachedChunk cachedChunk = chunkCache.get(chunkPos);
-
-        if (cachedChunk == null || pos.getY() >= 320 || pos.getY() <= -64) {
+        if (cachedChunk == null) {
             return BlockStatus.UNKNOWN;
         }
+        return cachedChunk.isSolid(pos) ? BlockStatus.SOLID : BlockStatus.AIR;
+    }
 
-        BlockState blockState = cachedChunk.getBlockState(pos);
-        if (blockState == null) return BlockStatus.UNKNOWN;
-
-        FluidState fluidState = blockState.getFluidState();
-
-        if (blockState.blocksMovement() || !fluidState.isEmpty() || blockState.isOf(Blocks.COBWEB)) {
-            return BlockStatus.OBSTACLE;
-        }
-
-        return BlockStatus.TRAVERSABLE;
+    public boolean isSolid(BlockPos pos) {
+        return getBlockStatus(pos) == BlockStatus.SOLID;
     }
 }
