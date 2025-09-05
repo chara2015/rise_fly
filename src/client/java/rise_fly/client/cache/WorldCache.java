@@ -43,6 +43,14 @@ public class WorldCache {
                 }
             }
         }
+
+        // [修复] 清理逻辑：移除距离玩家太远的区块，防止内存泄漏
+        int unloadDistance = renderDistance + 2;
+        chunkCache.keySet().removeIf(chunkPos -> {
+            int dx = playerChunkPos.x - chunkPos.x;
+            int dz = playerChunkPos.z - chunkPos.z;
+            return (dx * dx + dz * dz) > (unloadDistance * unloadDistance);
+        });
     }
 
     public BlockStatus getBlockStatus(BlockPos pos) {
