@@ -68,6 +68,7 @@ public class FlightControl {
 
     private void reset() {
         FlightManager.resetControls();
+        AimingUtils.resetAim(); // 在重置时取消静默瞄准
         this.currentPath = null;
         this.pathIndex = 0;
         this.ticksStuck = 0;
@@ -120,7 +121,9 @@ public class FlightControl {
         }
 
         Vec3d nextTarget = currentPath.get(pathIndex);
-        AimingUtils.aimAt(player, nextTarget);
+
+        // 【已修正】调用新的 aimAt 方法，只传递目标点
+        AimingUtils.aimAt(nextTarget);
 
         double horizontalDistance = player.getPos().multiply(1, 0, 1).distanceTo(nextTarget.multiply(1, 0, 1));
         double verticalDistance = nextTarget.y - player.getY();
