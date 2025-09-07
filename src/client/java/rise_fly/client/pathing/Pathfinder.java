@@ -4,6 +4,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.ChunkPos;
 import net.minecraft.util.math.Vec3d;
+import rise_fly.client.cache.BlockStatus;
 import rise_fly.client.cache.WorldCache;
 import rise_fly.client.util.DebugUtils;
 
@@ -13,6 +14,10 @@ import java.util.concurrent.ConcurrentHashMap;
 public class Pathfinder {
     public static final Pathfinder INSTANCE = new Pathfinder();
     private final Map<ChunkPos, Double> costMap = new ConcurrentHashMap<>();
+
+    // 为不同区域类型定义通行成本
+    private static final double COST_PENALTY_UNSCANNED_Y = 200.0;
+    private static final double COST_PENALTY_UNKNOWN_CHUNK = 10000.0;
 
     private Pathfinder() {}
 
@@ -227,17 +232,37 @@ public class Pathfinder {
                 Vec3d currentNodeCenter = new Vec3d(currentNode.pos.getCenterX(), cruiseAltitude, currentNode.pos.getCenterZ());
                 Vec3d neighborNodeCenter = new Vec3d(neighbor.pos.getCenterX(), cruiseAltitude, neighbor.pos.getCenterZ());
 
+                // 检查物理上是否可通行（通道内不能有固体方块）
                 if (!isTraversable(currentNodeCenter, neighborNodeCenter)) {
                     continue;
                 }
 
+                // 【核心变更】根据区块状态计算通行成本
                 double costMultiplier = costMap.getOrDefault(neighbor.pos, 1.0);
-
                 double newMovementCostToNeighbor = currentNode.gCost + getDistance(currentNode, neighbor) * costMultiplier;
 
-                if (WorldCache.INSTANCE.getBlockStatus(neighbor.pos.getStartPos()) == rise_fly.client.cache.BlockStatus.UNKNOWN) {
-                    newMovementCostToNeighbor += 1000;
+                // 检查邻居节点的中心点状态，并增加相应的惩罚成本
+                BlockPos neighborBlockPos = BlockPos.ofFloored(neighborNodeCenter);
+                BlockStatus status = WorldCache.INSTANCE.getBlockStatus(neighborBlockPos);
+
+                switch (status) {
+                    case UNSCANNED_Y:
+                        // 区域未扫描，有风险，增加中等惩罚
+                        newMovementCostToNeighbor += COST_PENALTY_UNSCANNED_Y;
+                        break;
+                    case UNKNOWN_CHUNK:
+                        // 区块完全未加载，风险极高，增加高额惩罚
+                        newMovementCostToNeighbor += COST_PENALTY_UNKNOWN_CHUNK;
+                        break;
+                    case SOLID:
+                        // isTraversable应该已经处理了这种情况，但作为双重保险
+                        // 我们直接跳过这个邻居节点
+                        continue;
+                    case AIR:
+                        // 已知是空气，不增加额外成本
+                        break;
                 }
+
 
                 PathNode neighborNodeInOpen = openMap.get(neighbor.pos);
                 if (neighborNodeInOpen == null || newMovementCostToNeighbor < neighborNodeInOpen.gCost) {
@@ -254,7 +279,7 @@ public class Pathfinder {
                 }
             }
         }
-        return null;
+        return null; // 未找到路径
     }
 
     private List<ChunkPos> retracePath(PathNode startNode, PathNode endNode) {
@@ -283,10 +308,10 @@ public class Pathfinder {
     private double getDistance(PathNode nodeA, PathNode nodeB) {
         int dstX = Math.abs(nodeA.pos.x - nodeB.pos.x);
         int dstZ = Math.abs(nodeA.pos.z - nodeB.pos.z);
-        // 对角线距离
+        // 对角线距离，放大10倍以使用整数计算
         if (dstX > dstZ) {
-            return 1.4 * dstZ + (dstX - dstZ);
+            return 14 * dstZ + 10 * (dstX - dstZ);
         }
-        return 1.4 * dstX + (dstZ - dstX);
+        return 14 * dstX + 10 * (dstZ - dstX);
     }
 }
