@@ -1,3 +1,4 @@
+// 文件路径: rise_fly/client/Rise_flyClient.java
 package rise_fly.client;
 
 import net.fabricmc.api.ClientModInitializer;
@@ -6,9 +7,9 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.text.Text;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.ChunkPos;
 import net.minecraft.util.math.Vec3d;
-import net.minecraft.util.math.BlockPos; // 【修正 #2】添加缺失的 BlockPos 导入
 import rise_fly.client.cache.WorldCache;
 import rise_fly.client.command.CommandManager;
 import rise_fly.client.config.ConfigManager;
@@ -16,41 +17,33 @@ import rise_fly.client.flight.FlightControl;
 import rise_fly.client.pathing.FlightMode;
 import rise_fly.client.pathing.Pathfinder;
 import rise_fly.client.util.DebugUtils;
+import rise_fly.client.util.Render;
 
 import java.util.List;
 
 public class Rise_flyClient implements ClientModInitializer {
 
     private static Rise_flyClient INSTANCE;
-    private Vec3d finalTargetPosition;
-    private List<Vec3d> currentPath;
+
+    // --- 【修复】为跨线程访问的变量添加 volatile 关键字确保线程安全 ---
+    private volatile Vec3d finalTargetPosition;
+    private volatile Vec3d currentSegmentTarget;
+    private volatile List<Vec3d> currentPath;
+    private volatile boolean isLongRangeFlight = false;
+    private volatile boolean isCalculatingNextSegment = false;
 
     // --- 寻路重试逻辑的常量 ---
-    /**
-     * 【修正 #1】在这里定义初始扫描半径常量
-     */
     private static final int INITIAL_SCAN_VERTICAL_RADIUS = 30;
-    /**
-     * 最大寻路尝试次数。
-     */
     private static final int MAX_PATHFINDING_ATTEMPTS = 4;
-    /**
-     * 每次重试时，扫描半径的中心Y坐标。
-     * -1 表示使用玩家当前的Y坐标。
-     */
     private static final int SCAN_CENTER_Y = -1;
-    /**
-     * 每次重试时，扫描范围扩大的半径增量。
-     */
     private static final int SCAN_RADIUS_INCREMENT = 30;
 
+    // --- 分段路径逻辑的常量 ---
+    private static final double PATH_SEGMENT_LENGTH = 800.0;
+    private static final double NEXT_SEGMENT_TRIGGER_DISTANCE = 200.0;
 
     public Rise_flyClient() {
         INSTANCE = this;
-    }
-
-    public static void setFlightMode(FlightMode mode) {
-        // ...
     }
 
     @Override
@@ -64,108 +57,154 @@ public class Rise_flyClient implements ClientModInitializer {
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             WorldCache.INSTANCE.onTick(client);
             FlightControl.INSTANCE.onClientTick(client);
+            handleLongRangeFlightTick(client);
         });
+
+        Render.register();
     }
 
-    /**
-     * 开始一次全新的飞行任务。
-     * @param target 最终目标点
-     */
     public void startFlight(Vec3d target) {
+        stopFlight(); // 开始新任务前先重置状态
         this.finalTargetPosition = target;
-        Pathfinder.INSTANCE.clearCosts();
 
         ClientPlayerEntity player = MinecraftClient.getInstance().player;
         if (player == null) return;
 
-        // 触发带重试逻辑的路径规划任务
-        executePathfindingTask(player.getPos(), this.finalTargetPosition, true);
+        double distanceToFinalTarget = player.getPos().distanceTo(target);
+
+        if (distanceToFinalTarget > PATH_SEGMENT_LENGTH) {
+            this.isLongRangeFlight = true;
+            DebugUtils.log("§d检测到长途飞行，启用分段路径模式。");
+            this.currentSegmentTarget = calculateNextSegmentTarget(player.getPos());
+            executePathfindingTask(player.getPos(), this.currentSegmentTarget, true);
+        } else {
+            this.isLongRangeFlight = false;
+            executePathfindingTask(player.getPos(), this.finalTargetPosition, true);
+        }
     }
 
-    /**
-     * 由外部（如FlightControl）请求的一次路径重规划。
-     */
+    private void handleLongRangeFlightTick(MinecraftClient client) {
+        if (!isLongRangeFlight || isCalculatingNextSegment || !FlightControl.INSTANCE.isEnabled() || client.player == null || currentSegmentTarget == null) {
+            return;
+        }
+
+        if (client.player.getPos().distanceTo(currentSegmentTarget) < NEXT_SEGMENT_TRIGGER_DISTANCE) {
+            isCalculatingNextSegment = true; // 加锁，防止重复计算
+            DebugUtils.log("§d接近路径段终点，开始异步计算下一段路径...");
+
+            Vec3d nextStartPos = currentSegmentTarget;
+            this.currentSegmentTarget = calculateNextSegmentTarget(nextStartPos);
+
+            if (this.currentSegmentTarget.equals(this.finalTargetPosition)) {
+                this.isLongRangeFlight = false;
+                DebugUtils.log("§d已规划至最后一段路径。");
+            }
+
+            executePathfindingTask(nextStartPos, this.currentSegmentTarget, false);
+        }
+    }
+
+    private Vec3d calculateNextSegmentTarget(Vec3d fromPos) {
+        double remainingDistance = fromPos.distanceTo(this.finalTargetPosition);
+        if (remainingDistance <= PATH_SEGMENT_LENGTH) {
+            return this.finalTargetPosition;
+        }
+        Vec3d direction = finalTargetPosition.subtract(fromPos).normalize();
+        return fromPos.add(direction.multiply(PATH_SEGMENT_LENGTH));
+    }
+
     public static void requestReplan() {
         if (INSTANCE == null) return;
         ClientPlayerEntity player = MinecraftClient.getInstance().player;
         if (player == null) return;
 
         DebugUtils.log("§6收到路径重规划请求...");
-        // 同样触发带重试逻辑的路径规划任务
-        INSTANCE.executePathfindingTask(player.getPos(), INSTANCE.finalTargetPosition, false);
+
+        // 【修复】重规划时应优先飞向当前分段目标，而不是最终目标，以遵守分段逻辑
+        final Vec3d replanTarget = INSTANCE.isLongRangeFlight && INSTANCE.currentSegmentTarget != null
+                ? INSTANCE.currentSegmentTarget
+                : INSTANCE.finalTargetPosition;
+
+        if (replanTarget == null) {
+            DebugUtils.log("§c重规划失败：无有效目标。");
+            INSTANCE.stopFlight();
+            return;
+        }
+
+        // 【修复】重规划时不应该禁用长途模式
+        // INSTANCE.isLongRangeFlight = false;
+        INSTANCE.executePathfindingTask(player.getPos(), replanTarget, false);
     }
 
-    /**
-     * 【核心重构】执行包含“扫描-重试”循环的异步路径规划任务。
-     * @param startVec 规划的起始点
-     * @param targetVec 规划的目标点
-     * @param isInitialFlight 这是否是任务的第一次规划
-     */
     private void executePathfindingTask(Vec3d startVec, Vec3d targetVec, boolean isInitialFlight) {
         MinecraftClient client = MinecraftClient.getInstance();
-
         if (isInitialFlight && client.player != null) {
             client.player.sendMessage(Text.literal("§e[RiseFly] 开始路径规划..."), true);
         }
 
         new Thread(() -> {
             List<Vec3d> path = null;
-
             for (int attempt = 0; attempt < MAX_PATHFINDING_ATTEMPTS; attempt++) {
-                // 1. 计算本次尝试的扫描半径和中心
-                int verticalRadius = (INITIAL_SCAN_VERTICAL_RADIUS) + (SCAN_RADIUS_INCREMENT * attempt);
-                int centerY = (SCAN_CENTER_Y == -1) ? (int)startVec.y : SCAN_CENTER_Y;
+                int verticalRadius = INITIAL_SCAN_VERTICAL_RADIUS + (SCAN_RADIUS_INCREMENT * attempt);
+                int centerY = (SCAN_CENTER_Y == -1) ? (int) startVec.y : SCAN_CENTER_Y;
 
                 if (attempt > 0) {
                     DebugUtils.log(String.format("§6路径规划失败，开始第 %d/%d 次重试，扩大扫描范围至 Y:%d ± %d...",
                             attempt, MAX_PATHFINDING_ATTEMPTS - 1, centerY, verticalRadius));
-                    // 2. 扩大扫描范围 (仅在重试时)
-                    // 为简单起见，我们扩大玩家周围3x3个区块的扫描范围
-                    ChunkPos playerChunk = new ChunkPos(BlockPos.ofFloored(startVec));
+
+                    ChunkPos startChunk = new ChunkPos(BlockPos.ofFloored(startVec));
+                    // 【改进】计算路径中点，并在中点区域也扩大扫描，以解决路径中途的未知区域问题
+                    Vec3d midPoint = startVec.lerp(targetVec, 0.5);
+                    ChunkPos midChunk = new ChunkPos(BlockPos.ofFloored(midPoint));
+
+                    // 扫描起点周围 (3x3 chunks)
                     for (int x = -1; x <= 1; x++) {
                         for (int z = -1; z <= 1; z++) {
-                            WorldCache.INSTANCE.expandScanYRange(new ChunkPos(playerChunk.x + x, playerChunk.z + z), centerY, verticalRadius);
+                            WorldCache.INSTANCE.expandScanYRange(new ChunkPos(startChunk.x + x, startChunk.z + z), centerY, verticalRadius);
+                        }
+                    }
+
+                    // 【新增】扫描中点周围 (3x3 chunks)
+                    DebugUtils.log(String.format("§6同时扩大中点区域 %s 的扫描范围...", midChunk.toString()));
+                    for (int x = -1; x <= 1; x++) {
+                        for (int z = -1; z <= 1; z++) {
+                            WorldCache.INSTANCE.expandScanYRange(new ChunkPos(midChunk.x + x, midChunk.z + z), centerY, verticalRadius);
                         }
                     }
                 }
 
-                // 3. 尝试寻路
-                if (getFlightMode() == FlightMode.X_MODE) {
-                    path = Pathfinder.INSTANCE.findPathXMode(startVec, targetVec);
-                } else {
-                    path = Pathfinder.INSTANCE.findPath(startVec, targetVec);
-                }
+                path = (getFlightMode() == FlightMode.X_MODE)
+                        ? Pathfinder.INSTANCE.findPathXMode(startVec, targetVec)
+                        : Pathfinder.INSTANCE.findPath(startVec, targetVec);
 
-                // 4. 检查结果
                 if (path != null && !path.isEmpty()) {
                     DebugUtils.log("§a在第 " + (attempt + 1) + " 次尝试中成功找到路径!");
-                    break; // 寻路成功，跳出循环
+                    break;
                 }
             }
 
-            // 5. 将最终结果交还给主线程处理
             final List<Vec3d> finalPath = path;
             client.execute(() -> {
                 ClientPlayerEntity player = client.player;
-                if (player == null) return; // 玩家可能已退出
+                if (player == null) return;
 
                 if (finalPath != null && !finalPath.isEmpty()) {
                     this.currentPath = finalPath;
-                    String message = isInitialFlight ? "§a路径已生成，开始飞行！" : "§a路径已成功修正！";
-                    player.sendMessage(Text.literal("[RiseFly] " + message), true);
-
                     if (isInitialFlight) {
+                        player.sendMessage(Text.literal("[RiseFly] §a路径已生成，开始飞行！"), true);
                         FlightControl.INSTANCE.setEnabled(true);
                         FlightControl.INSTANCE.setPath(this.currentPath);
                     } else {
+                        player.sendMessage(Text.literal("[RiseFly] §a路径已成功修正！"), true);
                         FlightControl.INSTANCE.updatePathToSegment(this.currentPath);
+                        this.isCalculatingNextSegment = false; // 解锁，允许计算再下一段
                     }
                 } else {
-                    String message = isInitialFlight ? "§c路径规划失败，找不到可用路径！" : "§c路径修正失败！";
-                    player.sendMessage(Text.literal("[RiseFly] " + message), false);
+                    player.sendMessage(Text.literal("[RiseFly] " + (isInitialFlight ? "§c路径规划失败！" : "§c路径修正失败！")), false);
                     if (isInitialFlight) {
                         stopFlight();
                     }
+                    this.isCalculatingNextSegment = false; // 失败也要解锁
                 }
             });
         }).start();
@@ -175,10 +214,13 @@ public class Rise_flyClient implements ClientModInitializer {
         FlightControl.INSTANCE.setEnabled(false);
         Pathfinder.INSTANCE.clearCosts();
         this.currentPath = null;
+        this.finalTargetPosition = null;
+        this.currentSegmentTarget = null;
+        this.isLongRangeFlight = false;
+        this.isCalculatingNextSegment = false;
     }
 
     public static FlightMode getFlightMode() {
-        // 这是一个示例，你需要根据你的逻辑实现它
         return FlightMode.NORMAL;
     }
 }

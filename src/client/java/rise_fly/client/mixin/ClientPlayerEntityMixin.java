@@ -26,7 +26,8 @@ public class ClientPlayerEntityMixin {
         if (FlightControl.INSTANCE.isEnabled()) {
             MinecraftClient client = MinecraftClient.getInstance();
 
-            float forward_input = FlightManager.holdForward ? 1.0f : 0.0f;
+            // 【修改】将前进和后退输入分开处理
+            float forward_input = FlightManager.holdForward ? 1.0f : (FlightManager.holdBack ? -1.0f : 0.0f);
             float strafe_input = FlightManager.holdRight ? 1.0f : (FlightManager.holdLeft ? -1.0f : 0.0f);
 
             float final_forward = forward_input;
@@ -39,6 +40,7 @@ public class ClientPlayerEntityMixin {
             }
 
             client.options.forwardKey.setPressed(final_forward > 0.01);
+            // 【修改】应用后退键
             client.options.backKey.setPressed(final_forward < -0.01);
             client.options.rightKey.setPressed(final_strafe > 0.01);
             client.options.leftKey.setPressed(final_strafe < -0.01);
